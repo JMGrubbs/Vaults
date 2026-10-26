@@ -4,7 +4,16 @@ from contextlib import asynccontextmanager
 
 from api.v1.api import api_router
 from cache.redis import redis_manager
+from core.config import settings
 from middleware.request_id import RequestIDMiddleware
+
+
+def _cors_origins() -> list[str]:
+    return [
+        origin.strip()
+        for origin in settings.cors_origins.split(",")
+        if origin.strip()
+    ]
 
 
 @asynccontextmanager
@@ -23,8 +32,7 @@ app = FastAPI(
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*",],
-    # allow_origins=_cors_origins(),
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

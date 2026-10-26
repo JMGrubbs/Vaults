@@ -26,7 +26,7 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-from models import user
+from models import auth_event, user
 target_metadata = user.Base.metadata
 
 # other values from the config, defined by the needs of env.py,

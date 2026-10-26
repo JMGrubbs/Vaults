@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useLocation, useNavigate } from "react-router";
 import { SESSION_EXPIRED_EVENT, api, notifySessionExpired } from "../services/api";
 
@@ -8,10 +15,10 @@ import { getCurrentUser } from "../services/User";
 const AuthContext = createContext(null);
 
 const SESSION_EXPIRATION_IGNORED_PATHS = [
-  "/api/v1/auth/login",
-  "/api/v1/auth/logout",
-  "/api/v1/auth/me",
-  "/api/v1/auth/register",
+  "/api/v1/vault/auth/login",
+  "/api/v1/vault/auth/logout",
+  "/api/v1/vault/auth/me",
+  "/api/v1/vault/auth/register",
 ];
 
 const shouldHandleSessionExpiration = (error) => {
@@ -32,16 +39,16 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
-  const login = async ({ username, password }) => {
+  const login = useCallback(async ({ email, password }) => {
     try {
       setAuthError(null);
 
-      const user_data = await loginUser( username, password, clientId, state, redirectUri);
-      console.log("Login successful:", user_data);
+      const userData = await loginUser(email, password);
 
-      if (user_data.username) {
-        setUser(user_data.username);
-        navigate("/about")
+      if (userData.username) {
+        setUser(userData.username);
+        const destination = location.state?.from?.pathname || "/user";
+        navigate(destination, { replace: true });
         return { ok: true };
       }
 
@@ -62,9 +69,9 @@ export function AuthProvider({ children }) {
         error: message,
       };
     }
-  };
+  }, [location.state, navigate]);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await logoutUser();
     } catch {
@@ -72,17 +79,18 @@ export function AuthProvider({ children }) {
     } finally {
       setUser(null);
       setAuthError(null);
+      navigate("/auth/login", { replace: true });
     }
-  };
+  }, [navigate]);
 
-  const createUser = async ({ username, password }) => {
+  const createUser = useCallback(async ({ email, password }) => {
     try {
       setAuthError(null);
 
-      const response = await registerUser(username, password);
+      const response = await registerUser(email, password);
 
       if (response.ok === true) {
-        const loginResult = await login({ username, password });
+        const loginResult = await login({ email, password });
 
         if (!loginResult.ok) {
           const message = loginResult.error || "User created but login failed";
@@ -93,7 +101,7 @@ export function AuthProvider({ children }) {
         return { ok: true };
       }
 
-      const message = response.data?.message || "User creation failed";
+      const message = response.message || "User creation failed";
       setAuthError(message);
       return { ok: false, error: message };
     } catch (error) {
@@ -109,19 +117,19 @@ export function AuthProvider({ children }) {
         error: message,
       };
     }
-  };
+  }, [login]);
 
-  const hasPermission = (permission) => {
+  const hasPermission = useCallback((permission) => {
     if (!user) return false;
     return (user.permissions || []).includes(permission);
-  };
+  }, [user]);
 
   const handleSessionExpired = useCallback(() => {
     setUser(null);
     setAuthError("Your session has expired. Please log in again.");
 
-    if (!location.pathname.startsWith("/user/login")) {
-      navigate("/user/login", {
+    if (!location.pathname.startsWith("/auth/login")) {
+      navigate("/auth/login", {
         replace: true,
         state: { from: location },
       });
@@ -144,6 +152,8 @@ export function AuthProvider({ children }) {
       api.interceptors.response.eject(interceptorId);
     };
   }, []);
+
+  const clearAuthError = useCallback(() => setAuthError(null), []);
 
   useEffect(() => {
     window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
@@ -184,9 +194,18 @@ export function AuthProvider({ children }) {
       hasPermission,
       isAuthenticated: !!user,
       authLoading,
-      clearAuthError: () => setAuthError(null),
+      clearAuthError,
     }),
-    [user, authError, authLoading]
+    [
+      user,
+      authError,
+      login,
+      logout,
+      createUser,
+      hasPermission,
+      authLoading,
+      clearAuthError,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

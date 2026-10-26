@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`auth-service` is the centralized identity service for the user's applications. It owns user credentials, password hashing, JWT issuance and validation, logout/revocation, and account administration. The React frontend is an account portal branded as Vaults.
+`Vaults` is the centralized identity service for the user's applications. It owns user credentials, password hashing, JWT issuance and validation, logout/revocation, and account administration. The React frontend is an account portal branded as Vaults.
 
 The current HTTP contract is direct credential login with either an HttpOnly cookie or a legacy internal token response. OAuth 2.1-style authorization-code and rate-limit service modules exist, but no OAuth routes or browser helper are wired into this checkout. Do not describe PKCE login as implemented until the routes, client validation, frontend flow, and tests exist.
 
@@ -61,15 +61,15 @@ Use `docker compose down` only when stopping the project is intended. Never add 
 - API settings require `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, and `COOKIE_KEY`; `ALGORITHM` and token lifetime have defaults.
 - Browser code reads `VITE_AUTH_SERVICE_BACKEND_URL`. Every `VITE_` value is public and must never contain a secret.
 - OAuth-related environment names exist but do not imply a working OAuth flow.
-- CORS is not environment-driven yet because `backend/main.py` uses a hard-coded wildcard and the corresponding setting is commented out.
+- Credentialed CORS uses the comma-separated `CORS_ORIGINS` setting; keep it restricted to exact browser origins.
 
 ## Current Authentication Contract
 
-- `POST /api/v1/auth/login` accepts email/password credentials.
-- Browser login sets the JWT in the `COOKIE_KEY` cookie with `HttpOnly`, `Secure`, and `SameSite=Lax` attributes.
-- Internal login (`internal: true`) returns the JWT in the JSON body.
-- Browser `GET /api/v1/auth/me` reads the cookie. Legacy internal `POST /api/v1/auth/me` may read the custom `token` header and returns an internal-shaped response.
-- Logout inserts the token `jti` into PostgreSQL and caches it in Redis. It does not currently delete the cookie.
+- Vault browser routes live below `/api/v1/vault/auth`; login and session lookup are cookie-only, registration is available at `/register`, and logout revokes the JWT and deletes the cookie.
+- Other applications use `/api/v1/auth`; login returns the JWT in the JSON body and authenticated routes accept the legacy custom `token` header or `Authorization: Bearer`.
+- The Vault frontend must never call `/api/v1/auth`; its browser API wrappers use `/api/v1/vault/auth` exclusively.
+- Logout inserts the token `jti` into PostgreSQL and caches it in Redis. Active user profiles are cached in Redis for five minutes and invalidated when account state changes.
+- `auth.auth_events` records sign-in, token-use, logout, and registration audit events. Store only token/email fingerprints; never persist raw JWTs, cookies, or passwords.
 - Access-token payloads contain `sub`, `exp`, `iat`, and a unique `jti`.
 
 Preserve these routes unless an intentional migration is documented and tested. Do not silently replace the custom internal header or response shape if existing callers may depend on them.

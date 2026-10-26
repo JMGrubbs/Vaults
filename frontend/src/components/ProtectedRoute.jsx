@@ -10,7 +10,7 @@ export default function ProtectedRoute({ requiredPermission }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/user/login" replace state={{ from: location }} />;
+    return <Navigate to="/auth/login" replace state={{ from: location }} />;
   }
 
   if (requiredPermission && !hasPermission(requiredPermission)) {

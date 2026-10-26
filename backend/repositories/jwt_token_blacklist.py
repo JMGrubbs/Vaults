@@ -1,6 +1,7 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from fastapi import Depends
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.jwt_token_blacklist import JwtTokenBlacklist
@@ -24,7 +25,7 @@ async def load_recent_blacklisted_tokens(
     minutes: int = 60,
     cache: CacheHelper = Depends(get_cache_helper),
 ) -> bool:
-    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     result = await session.execute(
         select(JwtTokenBlacklist.token).where(JwtTokenBlacklist.blacklisted_at >= cutoff_time)
     )
@@ -36,10 +37,12 @@ async def load_recent_blacklisted_tokens(
 
 
 async def insert_blacklisted_token(session: AsyncSession, jti: str, cache: CacheHelper) -> bool:
-    print(f"Inserting blacklisted token with jti: {jti}", flush=True)
-    new_entry = JwtTokenBlacklist(token=jti, blacklisted_at=datetime.utcnow())
-    session.add(new_entry)
-    await session.commit()
+    new_entry = JwtTokenBlacklist(token=jti, blacklisted_at=datetime.now(timezone.utc))
+    try:
+        session.add(new_entry)
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
     add_blacklisted_token_to_cache = await cache.set_json(f"blacklisted_token:{jti}", True, ttl=60 * 60)
     assert add_blacklisted_token_to_cache, "Failed to add blacklisted token to cache"
     return True

@@ -2,17 +2,16 @@ import { Link, Navigate, Route, Routes } from "react-router";
 import { useAuth } from "./auth/AuthProvider";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserLayout from "./layouts/UserLayout";
-import AuthLayout from "./layouts/AuthLayout";
 import Login from "./pages/Login";
 import About from "./pages/About";
 import Home from "./pages/Home";
 import RegisterUser from "./pages/Register";
 import Unauthorized from "./pages/Unauthorized";
-import UserPage from "./pages/UserPage"
+import UserPage from "./pages/UserPage";
 import AppManagment from "./pages/AppManagment";
 
 export default function App() {
-  const { user, logout, isAuthenticated, authLoading} = useAuth();
+  const { user, logout, isAuthenticated, authLoading } = useAuth();
 
   if (authLoading) {
     return <div>Loading...</div>;

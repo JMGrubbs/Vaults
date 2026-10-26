@@ -3,7 +3,7 @@ import { Navigate, Link } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 
 export default function CreateUser() {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -11,7 +11,7 @@ export default function CreateUser() {
   const { createUser, isAuthenticated, authError } = useAuth();
 
   if (isAuthenticated) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/user" replace />;
   }
 
   const handleSubmit = async (e) => {
@@ -26,18 +26,17 @@ export default function CreateUser() {
       return;
     }
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters long");
+    try {
+      const result = await createUser({ email, password });
+      if (!result.ok) {
+        setError(result.error);
+      }
+    } finally {
       setIsLoading(false);
-      return;
     }
-
-    const result = createUser({ username, password });
-    if (!result.ok) {
-      setError(result.error);
-    }
-    setIsLoading(false);
   };
+
+  const displayedError = error || authError;
 
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-gradient-to-br from-purple-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center px-4">
@@ -52,27 +51,29 @@ export default function CreateUser() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {error && (
+          {displayedError && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200 px-4 py-3 rounded-lg">
-              {error}
+              {displayedError}
             </div>
           )}
 
           <div>
             <label
-              htmlFor="username"
+              htmlFor="email"
               className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
             >
-              Username
+              Email
             </label>
             <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
               className="w-full px-4 py-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-              placeholder="Choose a username"
+              placeholder="you@example.com"
             />
           </div>
 
@@ -85,13 +86,19 @@ export default function CreateUser() {
             </label>
             <input
               id="password"
+              name="password"
               type="password"
+              autoComplete="new-password"
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               className="w-full px-4 py-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
               placeholder="Enter your password"
             />
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              Use at least 8 characters with a letter, number, and special character.
+            </p>
           </div>
 
           <div>
@@ -103,7 +110,10 @@ export default function CreateUser() {
             </label>
             <input
               id="confirmPassword"
+              name="confirmPassword"
               type="password"
+              autoComplete="new-password"
+              minLength={8}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
@@ -111,11 +121,6 @@ export default function CreateUser() {
               placeholder="Confirm your password"
             />
           </div>
-          <p className="text-red-600 dark:text-red-400 mt-2">
-            {authError ? "Error: " + authError : ""}
-          </p>
-          <br />
-
           <button
             type="submit"
             disabled={isLoading}
@@ -129,7 +134,7 @@ export default function CreateUser() {
           <p className="text-sm text-gray-600 dark:text-gray-400">
             Already have an account?{" "}
             <Link
-              to="/user/login"
+              to="/auth/login"
               className="text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 font-medium transition-colors"
             >
               Sign in here

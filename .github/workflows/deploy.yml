@@ -1,0 +1,159 @@
+name: Build and Deploy Vaults
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vaults-production
+  cancel-in-progress: true
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    environment: build and deploy
+
+    outputs:
+      api_image: ${{ steps.images.outputs.api_image }}
+      frontend_image: ${{ steps.images.outputs.frontend_image }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set image names
+        id: images
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME"
+          {
+            printf 'api_image=%s/vaults-api:%s\n' "$DOCKERHUB_USERNAME" "${GITHUB_SHA}"
+            printf 'frontend_image=%s/vaults-frontend:%s\n' "$DOCKERHUB_USERNAME" "${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/vaults-api:latest
+            ${{ steps.images.outputs.api_image }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/vaults-frontend:latest
+            ${{ steps.images.outputs.frontend_image }}
+
+  deploy:
+    needs: build-images
+    runs-on: ubuntu-latest
+    environment: build and deploy
+
+    steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Connect GitHub Actions to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Prepare deployment directory
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          SERVER_APP_DIR: ${{ secrets.SERVER_APP_DIR }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          envs: SERVER_APP_DIR
+          script: |
+            set -euo pipefail
+            : "${SERVER_APP_DIR:?SERVER_APP_DIR secret is required}"
+            mkdir -p "$SERVER_APP_DIR/postgres"
+
+      - name: Copy Compose deployment files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          source: "docker-compose.yaml,docker-compose.deploy.yml,postgres/init-db.sh"
+          target: ${{ secrets.SERVER_APP_DIR }}
+          overwrite: true
+
+      - name: Deploy Compose stack over Tailscale
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SERVER_APP_DIR: ${{ secrets.SERVER_APP_DIR }}
+          VAULTS_API_IMAGE: ${{ needs.build-images.outputs.api_image }}
+          VAULTS_FRONTEND_IMAGE: ${{ needs.build-images.outputs.frontend_image }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,SERVER_APP_DIR,VAULTS_API_IMAGE,VAULTS_FRONTEND_IMAGE
+          script: |
+            set -euo pipefail
+            : "${SERVER_APP_DIR:?SERVER_APP_DIR secret is required}"
+            : "${DOCKERHUB_USERNAME:?DOCKERHUB_USERNAME secret is required}"
+            : "${DOCKERHUB_TOKEN:?DOCKERHUB_TOKEN secret is required}"
+            cd "$SERVER_APP_DIR"
+            test -f docker-compose.yaml
+            test -f backend/.env
+            test -f frontend/.env
+
+            printf '%s' "$DOCKERHUB_TOKEN" | docker login \
+              --username "$DOCKERHUB_USERNAME" \
+              --password-stdin
+
+            export VAULTS_API_IMAGE VAULTS_FRONTEND_IMAGE
+            COMPOSE_FILES="-f docker-compose.yaml -f docker-compose.deploy.yml"
+            docker compose $COMPOSE_FILES config --quiet
+            docker compose $COMPOSE_FILES pull
+            docker compose $COMPOSE_FILES up -d --no-build --remove-orphans
+            for attempt in $(seq 1 30); do
+              if docker compose $COMPOSE_FILES exec -T api curl --fail --silent --show-error \
+                http://localhost:8000/api/v1/health; then
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                echo "API health check did not pass after 60 seconds" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+            docker compose $COMPOSE_FILES ps

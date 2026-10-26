@@ -57,6 +57,7 @@ services:
     restart: "no"
 
   api:
+    image: ${VAULTS_API_IMAGE:-vaults-api}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -86,6 +87,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: ${VAULTS_FRONTEND_IMAGE:-vaults-frontend}
     build:
       context: ./frontend
       dockerfile: Dockerfile

@@ -1,0 +1,6 @@
+services:
+  api:
+    volumes: []
+
+  frontend:
+    volumes: []

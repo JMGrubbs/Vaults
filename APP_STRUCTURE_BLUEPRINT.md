@@ -151,14 +151,14 @@ request-ID and CORS middleware, and mounts the v1 router at `/api/v1`.
 
 | Path | Responsibility |
 | --- | --- |
-| `backend/api/v1/endpoints/` | Active HTTP handlers for auth, users, and health. |
-| `backend/auth/` | Resolves current users and revokes the current cookie token. |
+| `backend/api/v1/endpoints/` | Separate Vault browser auth, application auth, user administration, and health handlers. |
+| `backend/auth/` | Resolves cookie or custom-header users, caches active profiles, and revokes tokens. |
 | `backend/cache/` | Redis lifecycle, dependency injection, and JSON helpers. |
 | `backend/core/` | Pydantic settings plus JWT/password primitives. |
 | `backend/db/` | Async SQLAlchemy engine, sessions, dependency, and metadata. |
 | `backend/middleware/` | Request-ID middleware; the other modules are empty placeholders. |
 | `backend/models/` | SQLAlchemy models in the PostgreSQL `auth` schema. |
-| `backend/repositories/` | User persistence and token-revocation persistence/cache operations. |
+| `backend/repositories/` | User persistence, token-revocation persistence/cache operations, and authentication-event audit writes. |
 | `backend/schemas/` | Pydantic request, response, and internal user shapes. |
 | `backend/services/` | Registration plus unmounted authorization-code/rate-limit scaffolding. |
 | `backend/alembic/` | Async migration environment and schema history. |
@@ -173,12 +173,18 @@ Every route below is prefixed with `/api/v1`.
 | `GET` | `/health` | `health_check` | None | Returns a basic process status. |
 | `GET` | `/health/ready` | `readiness_check` | None | Returns a static ready status. |
 | `GET` | `/health/live` | `liveness_check` | None | Returns alive status and a UTC timestamp. |
-| `POST` | `/auth/login` | `login_route` | Credentials in body | Issues a browser cookie or internal token response. |
-| `GET` | `/auth/me` | `read_me_route` | Cookie | Returns the browser response for an active user. |
-| `POST` | `/auth/me` | `read_me_route` | Custom `token` header, then cookie | Returns the internal response, including the same token. |
-| `GET` | `/auth/token-check` | `token_check_route` | Cookie | Confirms token validity and identifies the user. |
-| `POST` | `/auth/logout` | `logout_route` | Cookie | Blacklists the current token `jti`. |
-| `GET` | `/auth/is-admin` | `is_admin_route` | Cookie | Returns the current user's admin flag. |
+| `POST` | `/vault/auth/register` | `register_route` | None | Registers a normalized email/password account for Vault. |
+| `POST` | `/vault/auth/login` | `login_route` | Credentials in body | Issues the Vault browser cookie and returns the username. |
+| `GET` | `/vault/auth/me` | `read_me_route` | Cookie | Returns the active Vault user. |
+| `GET` | `/vault/auth/token-check` | `token_check_route` | Cookie | Confirms the Vault session is valid. |
+| `POST` | `/vault/auth/logout` | `logout_route` | Cookie | Blacklists the token `jti` and deletes the cookie. |
+| `GET` | `/vault/auth/is-admin` | `is_admin_route` | Cookie | Returns the Vault user's admin flag. |
+| `POST` | `/auth/login` | `login_route` | Credentials in body | Returns the legacy application token response. |
+| `GET`, `POST` | `/auth/me` | `read_me_route` | `token` or `Authorization: Bearer` header | Returns the application response, including the same token. |
+| `GET` | `/auth/token-check` | `token_check_route` | `token` or `Authorization: Bearer` header | Confirms the application token is valid. |
+| `POST` | `/auth/logout` | `logout_route` | `token` or `Authorization: Bearer` header | Blacklists the application token `jti`; safe to retry. |
+| `POST` | `/auth/blacklist` | `blacklist_route` | `token` or `Authorization: Bearer` header | Explicitly blacklists the application token `jti`; safe to retry. |
+| `GET` | `/auth/is-admin` | `is_admin_route` | `token` or `Authorization: Bearer` header | Returns the application user's admin flag. |
 | `POST` | `/users/create` | `create_new_user_route` | None | Registers a normalized email/password account. |
 | `DELETE` | `/users/delete` | `delete_user_route` | Current user; inline admin check | Deletes a target user by email. |
 | `POST` | `/users/deactivate` | `deactivate_user_route` | Cookie | Marks the current user inactive. |
@@ -193,7 +199,7 @@ No `/oauth` router is included by `backend/api/v1/api.py`.
 ```text
 Login page
   |
-  | POST /api/v1/auth/login { email, password }
+  | POST /api/v1/vault/auth/login { email, password }
   v
 login_route
   |
@@ -216,38 +222,45 @@ the browser's origin and cookie rules permit it.
 Internal caller
   |
   | POST /api/v1/auth/login
-  | { email, password, internal: true }
+  | { email, password }
   v
 Auth Service
   |
   `--> { id, username, is_admin, token }
 ```
 
-This is a legacy direct-token response. Its companion profile call is
-`POST /api/v1/auth/me` with the token in a header literally named `token`. The code
-does not currently parse `Authorization: Bearer ...`.
+This is the preserved direct-token application response. Its companion profile call is
+`GET` or `POST /api/v1/auth/me` with the token in the legacy `token` header or a
+standard `Authorization: Bearer ...` header.
 
 ### Authenticated request and logout
 
 ```text
-Cookie or eligible custom header
+Vault cookie or application custom header
   |
   v
 decode JWT and read jti/exp
   |
   +--> Redis blacklisted_token:<jti> exists? --> 401
   |
-  `--> load active user by sub from PostgreSQL --> route handler
+  `--> Redis auth:user:<sub> cached profile?
+       +--> cache hit --> route handler
+       `--> load active user from PostgreSQL, cache 5 minutes --> route handler
 
-POST /api/v1/auth/logout with cookie
+POST /api/v1/vault/auth/logout with cookie
   |
   +--> insert jti in auth.jwt_token_blacklist
-  `--> cache blacklisted_token:<jti> in Redis for one hour
+  +--> cache blacklisted_token:<jti> in Redis for one hour
+  `--> delete the Vault session cookie
 ```
 
 The revocation check reads Redis only. PostgreSQL is the durable record, and
 `load_recent_blacklisted_tokens()` can repopulate Redis, but no startup hook
-currently calls it. Logout does not delete or expire the browser cookie.
+currently calls it.
+
+Each sign-in and authenticated request also writes an audit event to
+`auth.auth_events`. Token-use events occur after Redis revocation and profile
+checks succeed, so a recorded use represents an accepted authenticated request.
 
 ## User Validation
 
@@ -281,7 +294,20 @@ PostgreSQL `auth` schema.
 | `token` | Unique, indexed JWT ID (`jti`), not the full JWT. |
 | `blacklisted_at` | Revocation timestamp. |
 
-The initial migration creates the schema and both tables. Compose runs
+### `auth.auth_events`
+
+| Column | Purpose |
+| --- | --- |
+| `id` | UUID event identifier. |
+| `event_type` | `signin_success`, `signin_failure`, `token_use`, `logout`, or `registration_success`. |
+| `user_id` | Optional UUID for events associated with a known account. |
+| `occurred_at` | UTC event timestamp. |
+| `request_id` | Correlation ID from request middleware. |
+| `token_fingerprint` | SHA-256 fingerprint of a token; raw JWTs are never stored. |
+| `email_fingerprint` | SHA-256 fingerprint used to correlate failed sign-ins without storing email text. |
+| `ip_address`, `user_agent`, `method`, `path` | Request context for audit and investigation. |
+
+The migrations create the schema and all three application tables. Compose runs
 `alembic upgrade head` on every API container start.
 
 ## Frontend
@@ -323,16 +349,15 @@ styles. API calls use an Axios instance whose base URL comes from
 | `/unauthorized` | `Unauthorized.jsx` | Public. |
 | Any other path | Redirect | Redirects to `/about`. |
 
-`NotFound.jsx` exists but is not mounted. Several components navigate to
-`/user/login` or `/user/create`, which are not registered; those paths fall
-through to `/about`.
+`NotFound.jsx` exists but is not mounted. Login, registration, protected-route,
+and expired-session navigation use the registered `/auth/*` browser routes.
 
 ## Configuration Boundaries
 
 | File | Important settings |
 | --- | --- |
 | Root `.env` | PostgreSQL bootstrap credentials, application-role defaults, and Compose-level OAuth placeholders. |
-| `backend/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, and OAuth placeholders. |
+| `backend/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, exact CORS origins, and OAuth placeholders. |
 | `frontend/.env` | Browser-visible API base URL in `VITE_AUTH_SERVICE_BACKEND_URL`. |
 
 Environment files are ignored and must not be read, logged, or committed.
@@ -345,8 +370,8 @@ backend `DATABASE_URL` when local files are created.
 
 Important current details:
 
-- CORS has no active environment setting; `backend/main.py` currently uses
-  `allow_origins=["*"]`.
+- CORS reads the comma-separated `CORS_ORIGINS` setting and enables credentials
+  only for those exact origins.
 - OAuth client, timeout, and rate-limit settings have no active route consumers.
 
 ## OAuth/PKCE Scaffolding Status
@@ -399,19 +424,18 @@ docker compose run --rm --no-deps frontend npm run lint
 docker compose run --rm --no-deps frontend npm run build
 ```
 
-The API suite currently checks Dockerfile package transport configuration and
-that token creation/decoding does not print sensitive values. There is no
-frontend test script or Compose test profile.
+The API suite covers route separation, browser-cookie and application-token
+login behavior, Redis user caching, Dockerfile package transport configuration,
+and token logging. There is no frontend test script or Compose test profile;
+the repository-level contract test prevents browser services from calling the
+application-token namespace.
 
 ## Current Gaps and Extension Points
 
 - Complete or remove the unfinished OAuth/PKCE surface. A completed flow needs
   registered-client parsing, exact redirect matching, required `state`, PKCE
   `S256`, one-time code routes, integration tests, and a working client flow.
-- Repair the auth provider's undefined OAuth values, await form actions, and
-  align redirects and links with registered frontend routes.
 - Replace wildcard CORS with explicit environment-driven origins.
-- Clear the browser cookie during logout in addition to revoking the `jti`.
 - Decide whether to migrate internal callers from the custom `token` header to
   standard bearer authentication; preserve compatibility during a transition.
 - Make readiness probe PostgreSQL and Redis instead of returning a constant.

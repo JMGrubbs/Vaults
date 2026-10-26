@@ -2,13 +2,15 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.user import User
-from schemas.user import UserCreate, DeleteUser
-from auth.dependencies import get_current_user
+from schemas.user import UserCreate, DeleteUser, UserSchema
+from auth.dependencies import get_current_user, invalidate_user_profile
+from cache.dependencies import get_cache_helper
+from cache.helpers import CacheHelper
 from repositories.user import (
     deactivate_user,
     delete_user,
     get_user_by_email,
+    get_user_by_id,
     make_user_admin,
 )
 from db.dependencies import get_session
@@ -30,13 +32,15 @@ async def create_new_user_route(
 @router.delete("/delete")
 async def delete_user_route(
     subject_user: DeleteUser,
-    current_user: User = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    cache: CacheHelper = Depends(get_cache_helper),
 ) -> dict[str, str]:
     if current_user.is_admin:
         subject_user_profile = await get_user_by_email(session, subject_user.email)
         if subject_user_profile is not None:
             await delete_user(session, subject_user_profile)
+            await invalidate_user_profile(str(subject_user_profile.id), cache)
             return {"message": f"User {subject_user.email} has been deleted"}
     else:
         return {"message": "User with this email does not exist"}
@@ -45,23 +49,30 @@ async def delete_user_route(
 
 @router.post("/deactivate")
 async def deactivate_user_route(
-    current_user: User = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    cache: CacheHelper = Depends(get_cache_helper),
 ) -> dict[str, str]:
-    deactivated_user = await deactivate_user(session, current_user)
+    user_record = await get_user_by_id(session, current_user.id)
+    if user_record is None:
+        raise HTTPException(status_code=404, detail="User does not exist")
+    deactivated_user = await deactivate_user(session, user_record)
+    await invalidate_user_profile(current_user.id, cache)
     return {"message": f"User {deactivated_user.email} is being deleted..."}
 
 
 @router.post("/make-admin")
 async def make_admin_route(
     subject_user: DeleteUser,
-    current_user: User = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    cache: CacheHelper = Depends(get_cache_helper),
 ) -> dict[str, str]:
     if current_user.is_admin:
         subject_user_profile = await get_user_by_email(session, subject_user.email)
         if subject_user_profile is not None:
             updated_user = await make_user_admin(session, subject_user_profile)
+            await invalidate_user_profile(str(updated_user.id), cache)
             return {"message": f"User {updated_user.email} is now an admin"}
         elif subject_user_profile is None:
             return {"message": "User with this email does not exist"}
