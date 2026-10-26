@@ -110,9 +110,13 @@ jobs:
           timeout: 1m
           envs: SERVER_APP_DIR
           script: |
-            set -euo pipefail
+            set -eu
             : "${SERVER_APP_DIR:?SERVER_APP_DIR secret is required}"
-            mkdir -p "$SERVER_APP_DIR/postgres"
+            if ! mkdir -p "$SERVER_APP_DIR/postgres"; then
+              echo "Unable to create SERVER_APP_DIR/postgres; check the path and SSH user permissions" >&2
+              exit 1
+            fi
+            echo "Deployment directory is ready"
 
       - name: Copy Compose deployment files
         uses: appleboy/scp-action@v0.1.7
@@ -142,14 +146,18 @@ jobs:
           timeout: 1m
           envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,SERVER_APP_DIR,VAULTS_API_IMAGE,VAULTS_FRONTEND_IMAGE
           script: |
-            set -euo pipefail
+            set -eu
             : "${SERVER_APP_DIR:?SERVER_APP_DIR secret is required}"
             : "${DOCKERHUB_USERNAME:?DOCKERHUB_USERNAME secret is required}"
             : "${DOCKERHUB_TOKEN:?DOCKERHUB_TOKEN secret is required}"
             cd "$SERVER_APP_DIR"
-            test -f docker-compose.yaml
-            test -f backend/.env
-            test -f frontend/.env
+            for required_file in docker-compose.yaml docker-compose.deploy.yml backend/.env frontend/.env; do
+              if [ ! -f "$required_file" ]; then
+                echo "Missing required deployment file: $SERVER_APP_DIR/$required_file" >&2
+                exit 1
+              fi
+            done
+            echo "Deployment files are present"
 
             printf '%s' "$DOCKERHUB_TOKEN" | docker login \
               --username "$DOCKERHUB_USERNAME" \
@@ -157,8 +165,11 @@ jobs:
 
             export VAULTS_API_IMAGE VAULTS_FRONTEND_IMAGE
             COMPOSE_FILES="-f docker-compose.yaml -f docker-compose.deploy.yml"
+            echo "Validating Compose configuration"
             docker compose $COMPOSE_FILES config --quiet
+            echo "Pulling deployment images"
             docker compose $COMPOSE_FILES pull
+            echo "Starting Vaults services"
             docker compose $COMPOSE_FILES up -d --no-build --remove-orphans
             for attempt in $(seq 1 30); do
               if docker compose $COMPOSE_FILES exec -T api curl --fail --silent --show-error \
