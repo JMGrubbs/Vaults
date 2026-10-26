@@ -3,7 +3,6 @@ from typing import Any
 from uuid import uuid4
 import jwt
 
-from fastapi.security import OAuth2PasswordBearer
 from pwdlib import PasswordHash
 
 from core.config import settings
@@ -12,7 +11,6 @@ SECRET_KEY = settings.secret_key
 ALGORITHM = settings.algorithm
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 password_hash = PasswordHash.recommended()
 
 
@@ -27,7 +25,8 @@ def create_access_token(
         "iat": datetime.now(timezone.utc),
         "jti": str(uuid4()),
     }
-    return str(jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM))
+    token = str(jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM))
+    return token
 
 
 def decode_access_token(token: str) -> dict[str, Any]:

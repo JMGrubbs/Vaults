@@ -4,17 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.user import User
 from schemas.user import UserCreate, DeleteUser
-from auth.dependencies import get_current_active_user
+from auth.dependencies import get_current_user
 from repositories.user import (
-    create_user,
-    check_user_exists,
     deactivate_user,
     delete_user,
     get_user_by_email,
     make_user_admin,
 )
 from db.dependencies import get_session
-from core.security import hash_password
+from services.user_registration import RegistrationConflict, register_user
 
 router = APIRouter(tags=["users"])
 
@@ -23,29 +21,16 @@ async def create_new_user_route(
     new_user: UserCreate,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, bool | str | uuid.UUID]:
-
-    if await check_user_exists(session, new_user.email):
-        return {"message": "User with this email already exists"}
-
-    new_user.password = hash_password(new_user.password)
-    assert new_user.password, "Password hashing failed, got empty string"
-
-    newly_created_user = await create_user(
-        session,
-        email=new_user.email,
-        hashed_password=new_user.password,
-    )
-
-    if not newly_created_user:
-        raise HTTPException(status_code=400, detail="User with this email already exists")
-
-    return {"ok": True, "user_id": newly_created_user.id}
+    try:
+        return await register_user(session, new_user)
+    except RegistrationConflict as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/delete")
 async def delete_user_route(
     subject_user: DeleteUser,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if current_user.is_admin:
@@ -60,7 +45,7 @@ async def delete_user_route(
 
 @router.post("/deactivate")
 async def deactivate_user_route(
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     deactivated_user = await deactivate_user(session, current_user)
@@ -70,7 +55,7 @@ async def deactivate_user_route(
 @router.post("/make-admin")
 async def make_admin_route(
     subject_user: DeleteUser,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if current_user.is_admin:

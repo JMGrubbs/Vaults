@@ -1,103 +1,106 @@
-# Auth API
+# Auth Service
 
-A centralized authentication API built with FastAPI for securing your other applications. This service handles user authentication, token issuance, token validation, logout, and user identity management so your downstream apps can rely on a single auth source.
+A centralized FastAPI identity API with a React/Vite account portal branded as Vaults. The service owns users, password verification, JWT issuance, cookie authentication, token revocation, and basic account administration.
 
-## Purpose
+The current application implements direct credential login. OAuth 2.1-style authorization-code and rate-limit service modules are present, but they are not connected to HTTP routes yet. There are no `/api/v1/oauth/*` endpoints or browser PKCE helper in this checkout.
 
-This API is intended to act as the authentication layer for multiple internal or external applications. Instead of implementing auth separately in each app, you can delegate authentication and authorization concerns to this service.
-
-Typical responsibilities include:
-
-- Authenticating users with email/username and password
-- Issuing JWT access tokens
-- Validating authenticated sessions for client applications
-- Managing users and roles
-- Supporting logout and token invalidation
-- Providing a consistent identity layer across your app ecosystem
-
-## Features
-
-- **Centralized Authentication**: One auth service for all your apps
-- **JWT-Based Security**: Token issuance and verification for stateless authentication
-- **Role-Based Access Control**: Manage user permissions by role
-- **Async FastAPI Stack**: High-performance async request handling
-- **PostgreSQL Integration**: Persistent storage for users, roles, and auth-related data
-- **Redis Support**: Token blacklisting, session support, and caching
-- **Health Monitoring**: Health endpoints for service monitoring and orchestration
-- **Docker Ready**: Easy local development and deployment with Docker Compose
+For a detailed repository and runtime map, see [`APP_STRUCTURE_BLUEPRINT.md`](APP_STRUCTURE_BLUEPRINT.md).
 
 ## Architecture
 
-- **FastAPI**: API framework for authentication endpoints
-- **PostgreSQL**: Stores users, credentials metadata, roles, and auth records
-- **Redis**: Supports fast token/session operations such as blacklist checks
-- **SQLAlchemy**: Async ORM and database access layer
-- **Alembic**: Schema migration management
-- **JWT**: Access token generation and validation
+- **Frontend:** React 19, JavaScript/JSX, Vite 8, React Router 7, Tailwind CSS 4, and Axios.
+- **API:** Python 3.14 and FastAPI on container port `8000`.
+- **Database:** PostgreSQL 17 with SQLAlchemy 2 and Alembic.
+- **Cache:** Redis 7.4 for the revoked-token cache.
+- **Authentication:** HS256 JWTs, `pwdlib` password hashing, and an HttpOnly browser cookie.
+- **Runtime:** Docker Compose publishes the frontend on `5175`, API on `8002`, and PostgreSQL on `5434`.
 
-## Use Cases
+The browser calls the API URL configured by `VITE_AUTH_SERVICE_BACKEND_URL` with credentials enabled. CORS is currently hard-coded to `*` in `app/main.py`; the `CORS_ORIGINS_JSON` placeholder is not wired into settings or middleware.
 
-- Shared authentication service for multiple web apps
-- Internal platform login for microservices or admin tools
-- Identity provider for frontends, mobile apps, or partner integrations
-- Centralized user and role management across products
-- Secure token validation for protected downstream APIs
+## Configure
 
-## Getting Started
+Prerequisites: Docker Engine and Docker Compose v2.
 
-1. Clone the repository.
-2. Copy `.env.example` to `.env`.
-3. Configure environment variables such as database connection, Redis connection, secret key, and token settings.
-4. Start the service with Docker Compose:
+```bash
+cp .env.example .env
+cp app/.env.example app/.env
+```
 
-   ```bash
-   docker-compose up -d
+Replace the database and signing-secret placeholders before using the service outside local development. The API also requires `COOKIE_KEY`, which is not currently present in the tracked `app/.env.example`. Add a non-secret cookie name such as `COOKIE_KEY=auth_session` to `app/.env`.
 
-Access the API at:
+Create `frontend/.env` with the browser-visible API origin:
 
-http://localhost:8000
+```dotenv
+VITE_AUTH_SERVICE_BACKEND_URL=http://localhost:8002
+```
 
-View the interactive API docs at:
+The tracked examples contain OAuth timeout and rate-limit placeholders reserved for the unfinished authorization-code flow; no active route consumes them. Values prefixed with `VITE_` are public and must never contain secrets.
 
-http://localhost:8000/docs
-Core Endpoints
-/api/v1/health - Health and readiness checks
-/api/v1/auth/login - Authenticate a user and issue an access token
-/api/v1/auth/logout - Invalidate the current token/session
-/api/v1/auth/verify - Verify token validity and authenticated identity
-/api/v1/users - User management operations
-How Other Apps Use This API
+## Run
 
-Your other applications can integrate with this service by:
+```bash
+docker compose config --quiet
+docker compose build
+docker compose up -d
+docker compose ps
+```
 
-Sending user credentials to the login endpoint
-Receiving a JWT access token
+- Vaults frontend: <http://localhost:5175>
+- API docs: <http://localhost:8002/docs>
+- Health: <http://localhost:8002/api/v1/health>
+- PostgreSQL: `localhost:5434`
 
-Including that token in protected requests:
+Stop without deleting data:
 
-Authorization: Bearer <token>
-Calling this API to verify identity, enforce permissions, or retrieve user information
+```bash
+docker compose down
+```
 
-This keeps authentication logic out of downstream applications and gives you a single place to manage security policies.
+`docker compose down -v` is destructive and removes database/cache volumes.
 
-Example Flow
-User logs into App A
-App A sends credentials to the Auth API
-Auth API validates credentials and returns a JWT
-App A stores and uses the token for future requests
-App B or another backend service can also trust and validate tokens issued by this Auth API
-On logout, the token can be blacklisted or invalidated depending on implementation
-Development Notes
+## Authentication Behavior
 
-This project is structured to support clean separation of concerns:
+Browser login sends an email and password to `POST /api/v1/auth/login`. A successful non-internal login returns the username and sets a JWT in the cookie named by `COOKIE_KEY`. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, and has a one-hour lifetime.
 
-auth routes for login, logout, and token verification
-user routes for user CRUD and identity management
-repository/service layers for business logic
-async database sessions for scalable performance
-Summary
+Internal callers can send `"internal": true` in the same request and receive the user ID, username, admin flag, and token in the JSON response. This is a legacy compatibility contract, not an OAuth token exchange. `POST /api/v1/auth/me` accepts the token through the custom `token` header; browser `GET /api/v1/auth/me` reads the cookie.
 
-This Auth API serves as the centralized authentication system for your other applications. It gives you a reusable, secure, and scalable foundation for login, token handling, authorization, and identity management across your platform.
+Logout stores the JWT ID (`jti`) in PostgreSQL and Redis. Subsequent authenticated requests reject a cached revoked token.
 
+## API Snapshot
 
-If you want, I can also turn this into a more production-grade README with sections
+All application routes are mounted below `/api/v1`.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/health`, `/health/ready`, `/health/live` | Process status; readiness is currently a static response. |
+| `POST` | `/auth/login` | Validate credentials and set a cookie or return the internal token response. |
+| `GET`, `POST` | `/auth/me` | Return the current active user from a cookie or legacy `token` header. |
+| `GET` | `/auth/token-check` | Confirm that the current cookie token is valid. |
+| `POST` | `/auth/logout` | Revoke the current cookie token. |
+| `GET` | `/auth/is-admin` | Return the current user's admin flag. |
+| `POST` | `/users/create` | Register a user after password validation and hashing. |
+| `DELETE` | `/users/delete` | Delete a user by email after the handler's admin check. |
+| `POST` | `/users/deactivate` | Mark the current user inactive. |
+| `POST` | `/users/make-admin` | Grant admin status after the handler's admin check. |
+
+FastAPI exposes the generated request and response schemas at `/docs`.
+
+## Tests
+
+```bash
+docker compose run --rm --no-deps api python -m unittest discover -s tests -p 'test_*.py'
+docker compose run --rm --no-deps frontend npm run lint
+docker compose run --rm --no-deps frontend npm run build
+```
+
+The frontend does not currently have an automated test script or a Compose test profile.
+
+## Current Limitations
+
+- `services/authorization_codes.py` and `services/login_rate_limit.py` are scaffolding only. They are not mounted by `app/api/v1/api.py`, and the authorization-code module imports a missing `core.oauth` module.
+- OAuth client, expiry, and login-rate configuration is not used by an active flow.
+- The current frontend auth flow needs repair: its provider references undefined OAuth values, async form actions are not consistently awaited, and some `/user/*` redirects do not match the registered `/auth/*` routes.
+- Connected-app and profile-management screens contain placeholder data and disabled controls.
+- Readiness does not probe PostgreSQL or Redis, and logout does not explicitly delete the browser cookie.
+
+These are implementation notes, not supported integration contracts. Add behavioral tests before changing or completing the flows.
