@@ -85,6 +85,17 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
+          ping: ${{ secrets.SERVER_HOST }}
+
+      - name: Verify Tailscale SSH reachability
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?SERVER_HOST secret is required}"
+          tailscale status
+          tailscale ping "$SERVER_HOST"
+          timeout 10 bash -c "</dev/tcp/${SERVER_HOST}/22"
 
       - name: Prepare deployment directory
         uses: appleboy/ssh-action@v1.2.0
@@ -95,6 +106,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
+          protocol: tcp4
+          timeout: 1m
           envs: SERVER_APP_DIR
           script: |
             set -euo pipefail
@@ -125,6 +138,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
+          protocol: tcp4
+          timeout: 1m
           envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,SERVER_APP_DIR,VAULTS_API_IMAGE,VAULTS_FRONTEND_IMAGE
           script: |
             set -euo pipefail
