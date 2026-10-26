@@ -23,9 +23,7 @@ app = FastAPI(
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://dvaults.johnmgrubbs.io",
-    ],
+    allow_origins=["*",],
     # allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],

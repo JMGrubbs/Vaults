@@ -12,10 +12,9 @@ class Settings(BaseSettings):
     oauth_login_rate_window_seconds: PositiveInt = 300
     oauth_login_email_limit: PositiveInt = 5
     oauth_login_ip_limit: PositiveInt = 300
-    oauth_clients_json: str = "[]"
     # Preserve the existing browser API behavior by default. Production deployments
     # should replace this wildcard with an explicit JSON origin allowlist.
-    cors_origins_json: list[str]
+    # cors_origins_json: list[str]
     cookie_key: str
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

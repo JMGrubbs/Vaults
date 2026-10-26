@@ -1,0 +1,410 @@
+# Auth Service Application Structure Blueprint
+
+This document maps the repository, service boundaries, active routes, data model,
+and primary runtime flows for `auth-service`. It is the detailed contributor
+reference for work spanning the React frontend, FastAPI API, PostgreSQL, Redis,
+and Docker Compose.
+
+This blueprint describes the current checkout. It distinguishes active behavior
+from OAuth/PKCE scaffolding that is present but not wired into the application.
+
+## Technology Summary
+
+| Area | Technology |
+| --- | --- |
+| Frontend | React 19, Vite 8, JavaScript with JSX, React Router 7, Tailwind CSS 4, Axios |
+| API | Python 3.14, FastAPI 0.135, Pydantic 2 |
+| Authentication | PyJWT, HS256 by default, `pwdlib` password hashing |
+| Persistence | PostgreSQL 17, SQLAlchemy 2 async sessions, Alembic |
+| Cache | Redis 7.4 with the async Redis client |
+| Local orchestration | Docker Compose |
+
+## Repository Layout
+
+```text
+auth-service/
+├── README.md
+├── AGENTS.md
+├── APP_STRUCTURE_BLUEPRINT.md
+├── LICENSE
+├── docker-compose.yaml
+├── pyproject.toml
+├── .env.example
+├── app/
+│   ├── main.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── .env.example
+│   ├── alembic.ini
+│   ├── alembic/
+│   │   ├── env.py
+│   │   └── versions/
+│   ├── api/v1/
+│   │   ├── api.py
+│   │   └── endpoints/
+│   │       ├── auth.py
+│   │       ├── health.py
+│   │       └── users.py
+│   ├── auth/
+│   ├── cache/
+│   ├── core/
+│   ├── db/
+│   ├── middleware/
+│   ├── models/
+│   ├── repositories/
+│   ├── schemas/
+│   ├── services/
+│   └── tests/
+└── frontend/
+    ├── index.html
+    ├── package.json
+    ├── vite.config.js
+    ├── Dockerfile
+    ├── public/
+    └── src/
+        ├── main.jsx
+        ├── App.jsx
+        ├── auth/
+        ├── components/
+        ├── layouts/
+        ├── pages/
+        └── services/
+```
+
+## Runtime Structure
+
+```text
+Browser
+  |
+  | http://localhost:5175
+  v
+React/Vite frontend :5173
+  |
+  | Axios to VITE_AUTH_SERVICE_BACKEND_URL
+  | with browser credentials enabled
+  v
+FastAPI API :8000  <------ internal callers use a legacy token response
+  |       |
+  |       `------ Redis db-cache :6379
+  |                 - revoked-token cache
+  |                 - required during API startup
+  |
+  `-------------- PostgreSQL :5432
+                    - auth.users
+                    - auth.jwt_token_blacklist
+                    - auth.alembic_version
+```
+
+Compose publishes the frontend on host port `5175`, the API on `8002`, and
+PostgreSQL on `5434`. Redis is reachable only on the Compose network as
+`db-cache`. Containers must use Compose service names rather than host
+`localhost` addresses.
+
+## Root Files
+
+| Path | Purpose |
+| --- | --- |
+| `README.md` | Setup, runbook, authentication behavior, API snapshot, and limitations. |
+| `AGENTS.md` | Repository-specific operating instructions and security guardrails. |
+| `APP_STRUCTURE_BLUEPRINT.md` | This architecture and ownership map. |
+| `docker-compose.yaml` | Defines services, ports, volumes, health checks, and startup ordering. |
+| `.env.example` | Placeholder values used by Compose interpolation. |
+| `pyproject.toml` | Minimal Python project metadata; dependencies remain in `app/requirements.txt`. |
+
+## Compose Services and Startup
+
+| Service | Image/build | Published port | Volume or mount | Startup behavior |
+| --- | --- | --- | --- | --- |
+| `db-cache` | `redis:7.4-alpine` | None | `auth_redis_cache` | Disables snapshots and append-only persistence; health checked with `redis-cli ping`. |
+| `postgres` | `postgres:17-alpine` | `5434:5432` | `postgres_data` | Health checked with `pg_isready`. |
+| `api` | `app/Dockerfile` | `8002:8000` | Bind mounts `./app:/app` | Waits for PostgreSQL and Redis, runs Alembic, then starts reload-mode Uvicorn. |
+| `frontend` | `frontend/Dockerfile` | `5175:5173` | Source bind mount plus `node_modules` volume | Starts the Vite development server after the API container starts. |
+
+```text
+postgres healthy ----+
+                     +----> api started ----> frontend started
+db-cache healthy ----+
+```
+
+The API lifespan opens a shared Redis connection and verifies it with `PING`.
+Failure to connect prevents API startup. Migrations run before Uvicorn, but the
+health and readiness routes do not query PostgreSQL or Redis.
+
+## Backend API
+
+`app/main.py` creates the FastAPI application, owns the Redis lifespan, installs
+request-ID and CORS middleware, and mounts the v1 router at `/api/v1`.
+
+### Backend directories
+
+| Path | Responsibility |
+| --- | --- |
+| `app/api/v1/endpoints/` | Active HTTP handlers for auth, users, and health. |
+| `app/auth/` | Resolves current users and revokes the current cookie token. |
+| `app/cache/` | Redis lifecycle, dependency injection, and JSON helpers. |
+| `app/core/` | Pydantic settings plus JWT/password primitives. |
+| `app/db/` | Async SQLAlchemy engine, sessions, dependency, and metadata. |
+| `app/middleware/` | Request-ID middleware; the other modules are empty placeholders. |
+| `app/models/` | SQLAlchemy models in the PostgreSQL `auth` schema. |
+| `app/repositories/` | User persistence and token-revocation persistence/cache operations. |
+| `app/schemas/` | Pydantic request, response, and internal user shapes. |
+| `app/services/` | Registration plus unmounted authorization-code/rate-limit scaffolding. |
+| `app/alembic/` | Async migration environment and schema history. |
+| `app/tests/` | Python `unittest` regression tests. |
+
+### Active routes
+
+Every route below is prefixed with `/api/v1`.
+
+| Method | Route | Handler | Authentication | Purpose |
+| --- | --- | --- | --- | --- |
+| `GET` | `/health` | `health_check` | None | Returns a basic process status. |
+| `GET` | `/health/ready` | `readiness_check` | None | Returns a static ready status. |
+| `GET` | `/health/live` | `liveness_check` | None | Returns alive status and a UTC timestamp. |
+| `POST` | `/auth/login` | `login_route` | Credentials in body | Issues a browser cookie or internal token response. |
+| `GET` | `/auth/me` | `read_me_route` | Cookie | Returns the browser response for an active user. |
+| `POST` | `/auth/me` | `read_me_route` | Custom `token` header, then cookie | Returns the internal response, including the same token. |
+| `GET` | `/auth/token-check` | `token_check_route` | Cookie | Confirms token validity and identifies the user. |
+| `POST` | `/auth/logout` | `logout_route` | Cookie | Blacklists the current token `jti`. |
+| `GET` | `/auth/is-admin` | `is_admin_route` | Cookie | Returns the current user's admin flag. |
+| `POST` | `/users/create` | `create_new_user_route` | None | Registers a normalized email/password account. |
+| `DELETE` | `/users/delete` | `delete_user_route` | Current user; inline admin check | Deletes a target user by email. |
+| `POST` | `/users/deactivate` | `deactivate_user_route` | Cookie | Marks the current user inactive. |
+| `POST` | `/users/make-admin` | `make_admin_route` | Current user; inline admin check | Grants admin status to a target user. |
+
+No `/oauth` router is included by `app/api/v1/api.py`.
+
+## Authentication and Revocation Flows
+
+### Browser login
+
+```text
+Login page
+  |
+  | POST /api/v1/auth/login { email, password }
+  v
+login_route
+  |
+  | active-user lookup + password verification
+  v
+JWT { sub, exp, iat, jti }
+  |
+  +--> Set COOKIE_KEY cookie
+  |    HttpOnly; Secure; SameSite=Lax; Path=/; one hour
+  |
+  `--> Return { username }
+```
+
+Axios uses `withCredentials: true`, so browser API calls include the cookie when
+the browser's origin and cookie rules permit it.
+
+### Internal login
+
+```text
+Internal caller
+  |
+  | POST /api/v1/auth/login
+  | { email, password, internal: true }
+  v
+Auth Service
+  |
+  `--> { id, username, is_admin, token }
+```
+
+This is a legacy direct-token response. Its companion profile call is
+`POST /api/v1/auth/me` with the token in a header literally named `token`. The code
+does not currently parse `Authorization: Bearer ...`.
+
+### Authenticated request and logout
+
+```text
+Cookie or eligible custom header
+  |
+  v
+decode JWT and read jti/exp
+  |
+  +--> Redis blacklisted_token:<jti> exists? --> 401
+  |
+  `--> load active user by sub from PostgreSQL --> route handler
+
+POST /api/v1/auth/logout with cookie
+  |
+  +--> insert jti in auth.jwt_token_blacklist
+  `--> cache blacklisted_token:<jti> in Redis for one hour
+```
+
+The revocation check reads Redis only. PostgreSQL is the durable record, and
+`load_recent_blacklisted_tokens()` can repopulate Redis, but no startup hook
+currently calls it. Logout does not delete or expire the browser cookie.
+
+## User Validation
+
+`UserCreate` trims and lowercases email addresses. New passwords require at
+least eight characters, one letter, one digit, and one configured special
+character. Passwords are hashed with `PasswordHash.recommended()`.
+
+`UserLogin` also normalizes email. Login and current-user repository queries
+only return active users.
+
+## Persistence
+
+All application-owned tables and the Alembic version table live in the
+PostgreSQL `auth` schema.
+
+### `auth.users`
+
+| Column | Purpose |
+| --- | --- |
+| `id` | UUID primary key generated by the application. |
+| `email` | Unique, indexed account identifier. |
+| `hashed_password` | Password hash; plaintext passwords must never be stored. |
+| `is_active` | Controls whether repository lookups can authenticate the user. |
+| `is_admin` | Controls handler-level administration checks. |
+
+### `auth.jwt_token_blacklist`
+
+| Column | Purpose |
+| --- | --- |
+| `id` | Integer primary key. |
+| `token` | Unique, indexed JWT ID (`jti`), not the full JWT. |
+| `blacklisted_at` | Revocation timestamp. |
+
+The initial migration creates the schema and both tables. Compose runs
+`alembic upgrade head` on every API container start.
+
+## Frontend
+
+The frontend is a React single-page application. `main.jsx` mounts a
+`BrowserRouter`, wraps the application in `AuthProvider`, and imports Tailwind
+styles. API calls use an Axios instance whose base URL comes from
+`VITE_AUTH_SERVICE_BACKEND_URL`.
+
+### Frontend files
+
+| Path | Purpose |
+| --- | --- |
+| `frontend/src/main.jsx` | React entry point, router, and authentication provider wiring. |
+| `frontend/src/App.jsx` | Top navigation and route definitions. |
+| `frontend/src/auth/AuthProvider.jsx` | Loads the user, runs auth calls, and handles 401 events. |
+| `frontend/src/components/ProtectedRoute.jsx` | Guards authenticated routes and optional permissions. |
+| `frontend/src/layouts/` | Outlet-only route layouts. |
+| `frontend/src/pages/Login.jsx` | Credential login form. |
+| `frontend/src/pages/Register.jsx` | Registration and password-confirmation form. |
+| `frontend/src/pages/UserPage.jsx` | Account profile with live email plus placeholder fields. |
+| `frontend/src/pages/AppManagment.jsx` | Searchable connected-app mockup with non-persisted controls. |
+| `frontend/src/pages/About.jsx` | Public Vaults product overview. |
+| `frontend/src/services/api.jsx` | Credentialed Axios client and session-expiration event. |
+| `frontend/src/services/AuthService.jsx` | Login, registration, and logout requests. |
+| `frontend/src/services/User.jsx` | Current-user request. |
+| `frontend/vite.config.js` | React/Tailwind plugins, port, host binding, and allowed host. |
+
+### Registered frontend routes
+
+| Route | Page | Access |
+| --- | --- | --- |
+| `/auth/login` | `Login.jsx` | Public; redirects authenticated users. |
+| `/auth/register` | `Register.jsx` | Public; redirects authenticated users. |
+| `/user` | `UserPage.jsx` | Protected. |
+| `/apps` | `AppManagment.jsx` | Protected; content is mock data. |
+| `/home` | `Home.jsx` | Public in the router. |
+| `/about` | `About.jsx` | Public. |
+| `/unauthorized` | `Unauthorized.jsx` | Public. |
+| Any other path | Redirect | Redirects to `/about`. |
+
+`NotFound.jsx` exists but is not mounted. Several components navigate to
+`/user/login` or `/user/create`, which are not registered; those paths fall
+through to `/about`.
+
+## Configuration Boundaries
+
+| File | Important settings |
+| --- | --- |
+| Root `.env` | PostgreSQL container credentials and Compose-level OAuth placeholders. |
+| `app/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, and OAuth placeholders. |
+| `frontend/.env` | Browser-visible API base URL in `VITE_AUTH_SERVICE_BACKEND_URL`. |
+
+Environment files are ignored and must not be read, logged, or committed.
+Tracked examples contain placeholders only.
+
+Important current details:
+
+- `COOKIE_KEY` is required by `Settings` but absent from the tracked
+  `app/.env.example`.
+- Compose references `frontend/.env`, but no `frontend/.env.example` is tracked.
+- `CORS_ORIGINS_JSON` appears in examples, but its setting is commented out and
+  `app/main.py` uses `allow_origins=["*"]`.
+- OAuth client, timeout, and rate-limit settings have no active route consumers.
+
+## OAuth/PKCE Scaffolding Status
+
+`app/services/authorization_codes.py` defines opaque code issuance and atomic
+single-use consumption through Redis `GETDEL`. Its grants bind a user, client
+ID, redirect URI, and PKCE challenge. The module calls
+`core.oauth.verify_pkce`, but `app/core/oauth.py` is not present.
+
+`app/services/login_rate_limit.py` defines Redis-backed IP and normalized-email
+buckets with hashed identifiers. Nothing currently instantiates or calls it.
+
+The settings and Compose file include authorization-code expiry, client JSON,
+and login-rate variables. No route parses registered clients, validates redirect
+URIs, accepts `state`, issues codes, or exchanges a code for a token. These
+modules are foundations for future work, not an active OAuth contract.
+
+## Middleware and Observability
+
+`RequestIDMiddleware` assigns a UUID to every request and returns it in the
+`X-Request-ID` response header. It does not honor an incoming request ID or add
+the value to structured logs.
+
+CORS currently allows all origins, methods, and headers while also enabling
+credentials. Production work should replace this with an environment-derived
+explicit origin list and browser verification.
+
+`app/middleware/auth.py`, `cors.py`, and `logging.py` are empty placeholders.
+
+## Tests and Development Commands
+
+Run from the repository root:
+
+```bash
+# Validate Compose without printing resolved configuration
+docker compose config --quiet
+
+# Build and start the stack
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs --tail 120 api frontend
+
+# Run API unit tests
+docker compose run --rm --no-deps api \
+  python -m unittest discover -s tests -p 'test_*.py'
+
+# Check frontend source and production bundling
+docker compose run --rm --no-deps frontend npm run lint
+docker compose run --rm --no-deps frontend npm run build
+```
+
+The API suite currently checks Dockerfile package transport configuration and
+that token creation/decoding does not print sensitive values. There is no
+frontend test script or Compose test profile.
+
+## Current Gaps and Extension Points
+
+- Complete or remove the unfinished OAuth/PKCE surface. A completed flow needs
+  registered-client parsing, exact redirect matching, required `state`, PKCE
+  `S256`, one-time code routes, integration tests, and a working client flow.
+- Repair the auth provider's undefined OAuth values, await form actions, and
+  align redirects and links with registered frontend routes.
+- Replace wildcard CORS with explicit environment-driven origins.
+- Clear the browser cookie during logout in addition to revoking the `jti`.
+- Decide whether to migrate internal callers from the custom `token` header to
+  standard bearer authentication; preserve compatibility during a transition.
+- Make readiness probe PostgreSQL and Redis instead of returning a constant.
+- Restore durable revocations from PostgreSQL into Redis during startup, or
+  document a different cache-recovery strategy.
+- Replace connected-app, permissions, activity, and profile placeholders with
+  persisted models and APIs before presenting them as account state.
+- Add endpoint/service tests, frontend component tests, and browser-level auth
+  coverage.
+- Add and maintain complete `.env.example` files for every service.

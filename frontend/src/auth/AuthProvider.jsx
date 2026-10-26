@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { SESSION_EXPIRED_EVENT, api, notifySessionExpired } from "../services/api";
 
 import { loginUser, registerUser, logoutUser } from "../services/AuthService";
@@ -28,14 +28,9 @@ const shouldHandleSessionExpiration = (error) => {
 export function AuthProvider({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
-
-  let clientId = searchParams.get("client_id") || "vault-web";
-  let redirectUri = searchParams.get("redirect_uri") || "https://dvault.johnmgrubbs.com/auth/callback";
-  let state = searchParams.get("state") || "default_state";
 
   const login = async ({ username, password }) => {
     try {

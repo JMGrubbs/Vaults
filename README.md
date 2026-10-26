@@ -1,18 +1,21 @@
 # Auth Service
 
-A centralized FastAPI identity API with a React/Vite login experience that every registered application can use. Applications redirect users here, Auth Service validates credentials, and the browser returns with a short-lived one-time authorization code. The originating app exchanges that code with PKCE and stores the resulting access token in its own browser session.
+A centralized FastAPI identity API with a React/Vite account portal branded as Vaults. The service owns users, password verification, JWT issuance, cookie authentication, token revocation, and basic account administration.
 
-Access tokens are **never placed in redirect URLs**.
+The current application implements direct credential login. OAuth 2.1-style authorization-code and rate-limit service modules are present, but they are not connected to HTTP routes yet. There are no `/api/v1/oauth/*` endpoints or browser PKCE helper in this checkout.
+
+For a detailed repository and runtime map, see [`APP_STRUCTURE_BLUEPRINT.md`](APP_STRUCTURE_BLUEPRINT.md).
 
 ## Architecture
 
-- **Frontend:** React 19, TypeScript, Vite, and unprivileged Nginx on port `3000`.
-- **API:** FastAPI on port `8000`.
-- **Database:** PostgreSQL 17 for users and revocation records.
-- **Cache:** Redis 7.4 for revocations and single-use authorization codes.
-- **Login protocol:** OAuth 2.1-style authorization code flow with mandatory `state` and PKCE S256.
+- **Frontend:** React 19, JavaScript/JSX, Vite 8, React Router 7, Tailwind CSS 4, and Axios.
+- **API:** Python 3.14 and FastAPI on container port `8000`.
+- **Database:** PostgreSQL 17 with SQLAlchemy 2 and Alembic.
+- **Cache:** Redis 7.4 for the revoked-token cache.
+- **Authentication:** HS256 JWTs, `pwdlib` password hashing, and an HttpOnly browser cookie.
+- **Runtime:** Docker Compose publishes the frontend on `5175`, API on `8002`, and PostgreSQL on `5434`.
 
-The Nginx frontend proxies `/api/*` to FastAPI, so the shared login page is same-origin. The public browser helper is served with cross-origin module headers. For compatibility with the existing browser API, CORS defaults to `*`; production deployments should set `CORS_ORIGINS_JSON` to an explicit list. Registered callback origins are always added automatically.
+The browser calls the API URL configured by `VITE_AUTH_SERVICE_BACKEND_URL` with credentials enabled. CORS is currently hard-coded to `*` in `app/main.py`; the `CORS_ORIGINS_JSON` placeholder is not wired into settings or middleware.
 
 ## Configure
 
@@ -23,32 +26,29 @@ cp .env.example .env
 cp app/.env.example app/.env
 ```
 
-Use strong production values for database and signing secrets. Register each app in `OAUTH_CLIENTS_JSON` with an exact callback allowlist:
+Replace the database and signing-secret placeholders before using the service outside local development. The API also requires `COOKIE_KEY`, which is not currently present in the tracked `app/.env.example`. Add a non-secret cookie name such as `COOKIE_KEY=auth_session` to `app/.env`.
 
-```json
-[
-  {
-    "client_id": "scrappy-web",
-    "name": "Scrappy",
-    "redirect_uris": ["https://scrappy.example.com/auth/callback"]
-  }
-]
+Create `frontend/.env` with the browser-visible API origin:
+
+```dotenv
+VITE_AUTH_SERVICE_BACKEND_URL=http://localhost:8002
 ```
 
-Non-loopback callback URLs must use HTTPS. Wildcards, fragments, userinfo, host suffix matching, and unregistered paths are rejected.
+The tracked examples contain OAuth timeout and rate-limit placeholders reserved for the unfinished authorization-code flow; no active route consumes them. Values prefixed with `VITE_` are public and must never contain secrets.
 
 ## Run
 
 ```bash
-docker compose config
-docker compose up --build -d
+docker compose config --quiet
+docker compose build
+docker compose up -d
 docker compose ps
 ```
 
-- Shared login UI: <http://localhost:3000>
-- API docs: <http://localhost:8000/docs>
-- Health: <http://localhost:8000/api/v1/health>
-- Browser integration helper: <http://localhost:3000/auth-client.js>
+- Vaults frontend: <http://localhost:5175>
+- API docs: <http://localhost:8002/docs>
+- Health: <http://localhost:8002/api/v1/health>
+- PostgreSQL: `localhost:5434`
 
 Stop without deleting data:
 
@@ -58,71 +58,49 @@ docker compose down
 
 `docker compose down -v` is destructive and removes database/cache volumes.
 
-## Integrate an Application
+## Authentication Behavior
 
-The frontend serves a small browser helper at `/auth-client.js`. An originating SPA can import it, start login, then finish login on its registered callback route.
+Browser login sends an email and password to `POST /api/v1/auth/login`. A successful non-internal login returns the username and sets a JWT in the cookie named by `COOKIE_KEY`. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, and has a one-hour lifetime.
 
-```js
-import {
-  beginLogin,
-  beginRegistration,
-  completeLogin,
-  getAccessToken,
-} from "https://auth.example.com/auth-client.js";
+Internal callers can send `"internal": true` in the same request and receive the user ID, username, admin flag, and token in the JSON response. This is a legacy compatibility contract, not an OAuth token exchange. `POST /api/v1/auth/me` accepts the token through the custom `token` header; browser `GET /api/v1/auth/me` reads the cookie.
 
-// Sign-in button
-await beginLogin({
-  authUrl: "https://auth.example.com/",
-  clientId: "scrappy-web",
-  redirectUri: "https://scrappy.example.com/auth/callback",
-});
+Logout stores the JWT ID (`jti`) in PostgreSQL and Redis. Subsequent authenticated requests reject a cached revoked token.
 
-// Create-account button uses the same registered callback and PKCE flow
-await beginRegistration({
-  authUrl: "https://auth.example.com/",
-  clientId: "scrappy-web",
-  redirectUri: "https://scrappy.example.com/auth/callback",
-});
+## API Snapshot
 
-// Registered /auth/callback route
-const session = await completeLogin({
-  callbackUrl: window.location.href,
-  tokenEndpoint: "https://auth.example.com/api/v1/oauth/token",
-  clientId: "scrappy-web",
-  redirectUri: "https://scrappy.example.com/auth/callback",
-});
+All application routes are mounted below `/api/v1`.
 
-console.log(session.expiresIn);
-// The token is now available from getAccessToken() in sessionStorage
-```
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/health`, `/health/ready`, `/health/live` | Process status; readiness is currently a static response. |
+| `POST` | `/auth/login` | Validate credentials and set a cookie or return the internal token response. |
+| `GET`, `POST` | `/auth/me` | Return the current active user from a cookie or legacy `token` header. |
+| `GET` | `/auth/token-check` | Confirm that the current cookie token is valid. |
+| `POST` | `/auth/logout` | Revoke the current cookie token. |
+| `GET` | `/auth/is-admin` | Return the current user's admin flag. |
+| `POST` | `/users/create` | Register a user after password validation and hashing. |
+| `DELETE` | `/users/delete` | Delete a user by email after the handler's admin check. |
+| `POST` | `/users/deactivate` | Mark the current user inactive. |
+| `POST` | `/users/make-admin` | Grant admin status after the handler's admin check. |
 
-The login page links to `/register` while preserving the signed-in app's client, callback, state, and PKCE challenge. After creating an account, Auth Service immediately issues the same one-time authorization result and returns the browser to that app. Apps can open registration directly with `beginRegistration()`.
-
-The helper:
-
-1. Generates a cryptographically random `state` and PKCE verifier.
-2. Redirects to Auth Service with the PKCE challenge.
-3. Validates returned `state` on the callback route and rejects browser transactions older than five minutes.
-4. Removes `code` and `state` from browser history before exchanging the one-time code.
-5. Exchanges the one-time code; the code is client-bound, redirect-bound, expires after two minutes by default, and can only be consumed once.
-6. Stores the access token and its absolute expiry in the originating app's browser `sessionStorage` as `auth:access_token`; `getAccessToken()` clears expired values.
-
-Authorization logins use two throttling layers without trusting caller-supplied forwarding headers: Nginx limits the public authorize route by its direct client IP, while Redis limits hashed email identifiers and direct API peer addresses. Configure the Redis window and limits with `OAUTH_LOGIN_RATE_*` values.
-
-JavaScript-accessible tokens can be stolen by an XSS vulnerability in the originating app. Keep that app's CSP and dependencies strict. For apps with a backend-for-frontend, prefer exchanging the code server-side and setting that app's own `HttpOnly`, `Secure`, `SameSite` session cookie instead of JavaScript token storage.
+FastAPI exposes the generated request and response schemas at `/docs`.
 
 ## Tests
 
 ```bash
 docker compose run --rm --no-deps api python -m unittest discover -s tests -p 'test_*.py'
-docker compose --profile test run --rm frontend-test
-docker compose --profile test run --rm frontend-test sh -c "npm ci && npm run build"
+docker compose run --rm --no-deps frontend npm run lint
+docker compose run --rm --no-deps frontend npm run build
 ```
 
-## Existing API
+The frontend does not currently have an automated test script or a Compose test profile.
 
-Compatibility endpoints remain under `/api/v1/auth` and `/api/v1/users`. New browser-login endpoints are:
+## Current Limitations
 
-- `GET /api/v1/oauth/client` — validate a client/callback pair and return display metadata.
-- `POST /api/v1/oauth/authorize` — authenticate credentials and issue a one-time code redirect.
-- `POST /api/v1/oauth/token` — exchange a one-time code and PKCE verifier for a bearer access token.
+- `services/authorization_codes.py` and `services/login_rate_limit.py` are scaffolding only. They are not mounted by `app/api/v1/api.py`, and the authorization-code module imports a missing `core.oauth` module.
+- OAuth client, expiry, and login-rate configuration is not used by an active flow.
+- The current frontend auth flow needs repair: its provider references undefined OAuth values, async form actions are not consistently awaited, and some `/user/*` redirects do not match the registered `/auth/*` routes.
+- Connected-app and profile-management screens contain placeholder data and disabled controls.
+- Readiness does not probe PostgreSQL or Redis, and logout does not explicitly delete the browser cookie.
+
+These are implementation notes, not supported integration contracts. Add behavioral tests before changing or completing the flows.
