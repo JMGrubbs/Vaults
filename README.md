@@ -27,9 +27,26 @@ cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 ```
 
-Replace the database password in both the root and backend environment files so PostgreSQL and the backend use the same credentials. Replace the signing-secret placeholder before using the service outside local development. The frontend template points to the locally published API at `http://localhost:8002`.
+Replace both database-password placeholders in the root environment file. Keep
+`POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD`, and `POSTGRES_APP_DB` synchronized
+with the username, password, and database in the backend `DATABASE_URL`. Replace
+the signing-secret placeholder before using the service outside local
+development. The frontend template points to the locally published API at
+`http://localhost:8002`.
 
 The tracked examples contain OAuth timeout and rate-limit placeholders reserved for the unfinished authorization-code flow; no active route consumes them. Values prefixed with `VITE_` are public and must never contain secrets.
+
+On the first startup of an empty PostgreSQL data volume, Compose mounts
+`postgres/init-db.sh` into the image initialization directory. The script
+ensures the configured database role and database exist, creates the `auth`
+schema, and assigns ownership to that role. PostgreSQL initialization scripts
+do not run again for an existing data volume.
+
+Compose also runs the script through the one-shot `postgres-init` service on
+every startup. That service reads the application role, password, and database
+from the backend `DATABASE_URL`, reconciles the role password, and must finish
+successfully before the API runs migrations. This keeps existing data volumes
+compatible when application database credentials change.
 
 ## Run
 

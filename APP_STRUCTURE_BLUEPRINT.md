@@ -28,6 +28,8 @@ auth-service/
 ├── APP_STRUCTURE_BLUEPRINT.md
 ├── LICENSE
 ├── docker-compose.yaml
+├── postgres/
+│   └── init-db.sh
 ├── pyproject.toml
 ├── .env.example
 ├── backend/
@@ -109,6 +111,7 @@ PostgreSQL on `5434`. Redis is reachable only on the Compose network as
 | `AGENTS.md` | Repository-specific operating instructions and security guardrails. |
 | `APP_STRUCTURE_BLUEPRINT.md` | This architecture and ownership map. |
 | `docker-compose.yaml` | Defines services, ports, volumes, health checks, and startup ordering. |
+| `postgres/init-db.sh` | Ensures the configured role, database, and owned `auth` schema exist when PostgreSQL initializes an empty data volume. |
 | `.env.example` | Placeholder values used by Compose interpolation. |
 | `pyproject.toml` | Minimal Python project metadata; dependencies remain in `backend/requirements.txt`. |
 
@@ -117,19 +120,27 @@ PostgreSQL on `5434`. Redis is reachable only on the Compose network as
 | Service | Image/build | Published port | Volume or mount | Startup behavior |
 | --- | --- | --- | --- | --- |
 | `db-cache` | `redis:7.4-alpine` | None | `auth_redis_cache` | Disables snapshots and append-only persistence; health checked with `redis-cli ping`. |
-| `postgres` | `postgres:17-alpine` | `5434:5432` | `postgres_data` | Health checked with `pg_isready`. |
+| `postgres` | `postgres:17-alpine` | `5434:5432` | `postgres_data` plus the read-only initialization script | Initializes the configured role, database, and `auth` schema on a new data volume; health checked with `pg_isready`. |
+| `postgres-init` | `postgres:17-alpine` | None | Read-only initialization script | Reconciles the application role from the backend `DATABASE_URL` after PostgreSQL is healthy, including for existing data volumes. |
 | `api` | `backend/Dockerfile` | `8002:8000` | Bind mounts `./backend:/app` | Waits for PostgreSQL and Redis, runs Alembic, then starts reload-mode Uvicorn. |
 | `frontend` | `frontend/Dockerfile` | `5175:5173` | Source bind mount plus `node_modules` volume | Starts the Vite development server after the API container starts. |
 
 ```text
-postgres healthy ----+
-                     +----> api started ----> frontend started
-db-cache healthy ----+
+postgres healthy ----> postgres-init completed ----+
+db-cache healthy -----------------------------------+----> api started ----> frontend started
 ```
 
 The API lifespan opens a shared Redis connection and verifies it with `PING`.
 Failure to connect prevents API startup. Migrations run before Uvicorn, but the
 health and readiness routes do not query PostgreSQL or Redis.
+
+The PostgreSQL image processes `postgres/init-db.sh` while initializing an
+empty data directory. Compose also runs it through a one-shot `postgres-init`
+service on every startup so existing volumes are reconciled before the API
+starts. That service derives the application role, password, and database from
+the backend `DATABASE_URL`; the script quotes configured identifiers and makes
+the application role the owner of the database and `auth` schema. Alembic also
+retains its defensive `CREATE SCHEMA IF NOT EXISTS auth` behavior.
 
 ## Backend API
 
@@ -320,7 +331,7 @@ through to `/about`.
 
 | File | Important settings |
 | --- | --- |
-| Root `.env` | PostgreSQL container credentials and Compose-level OAuth placeholders. |
+| Root `.env` | PostgreSQL bootstrap credentials, application-role defaults, and Compose-level OAuth placeholders. |
 | `backend/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, and OAuth placeholders. |
 | `frontend/.env` | Browser-visible API base URL in `VITE_AUTH_SERVICE_BACKEND_URL`. |
 
@@ -328,8 +339,9 @@ Environment files are ignored and must not be read, logged, or committed.
 Tracked examples contain placeholders only.
 
 The tracked root, backend, and frontend examples cover the variables currently
-read by Compose and application settings. The root and backend database password
-placeholders must remain synchronized when local files are created.
+read by Compose and application settings. The root `POSTGRES_APP_*` values must
+remain synchronized with the corresponding credentials and database in the
+backend `DATABASE_URL` when local files are created.
 
 Important current details:
 

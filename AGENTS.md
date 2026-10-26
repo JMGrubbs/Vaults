@@ -57,7 +57,7 @@ Use `docker compose down` only when stopping the project is intended. Never add 
 
 - Never read, print, commit, or copy values from `.env`, `backend/.env`, or `frontend/.env` into tracked files or logs.
 - Keep `.env.example`, `backend/.env.example`, and `frontend/.env.example` synchronized with the settings each layer actually reads. Examples must contain placeholders only.
-- Root Compose interpolation uses `POSTGRES_MAIN_USER`, `POSTGRES_MAIN_PASSWORD`, and `POSTGRES_MAIN_DB`.
+- Root Compose interpolation uses `POSTGRES_MAIN_USER`, `POSTGRES_MAIN_PASSWORD`, and `POSTGRES_MAIN_DB` for bootstrap administration, plus `POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD`, `POSTGRES_APP_DB`, and `POSTGRES_APP_SCHEMA` for the application role. Keep the application values synchronized with the backend `DATABASE_URL`.
 - API settings require `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, and `COOKIE_KEY`; `ALGORITHM` and token lifetime have defaults.
 - Browser code reads `VITE_AUTH_SERVICE_BACKEND_URL`. Every `VITE_` value is public and must never contain a secret.
 - OAuth-related environment names exist but do not imply a working OAuth flow.
