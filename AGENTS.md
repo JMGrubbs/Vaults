@@ -8,7 +8,7 @@ The current HTTP contract is direct credential login with either an HttpOnly coo
 
 ## Architecture
 
-- `app/`: Python 3.14 FastAPI API.
+- `backend/`: Python 3.14 FastAPI API.
 - PostgreSQL 17: users, token-revocation records, and Alembic state in the `auth` schema.
 - Redis 7.4: revocation cache; the API requires Redis during startup.
 - `frontend/`: React 19 + JavaScript/JSX + Vite 8 account UI.
@@ -19,15 +19,15 @@ Read `APP_STRUCTURE_BLUEPRINT.md` before making cross-layer changes.
 
 ## Important Paths
 
-- `app/main.py`: FastAPI lifespan, request-ID middleware, CORS, and v1 router.
-- `app/api/v1/api.py`: route registration and the source of truth for active endpoint groups.
-- `app/api/v1/endpoints/`: authentication, user, and health handlers.
-- `app/auth/dependencies.py`: cookie/custom-header authentication and revocation.
-- `app/core/config.py` and `app/core/security.py`: settings, JWTs, and password primitives.
-- `app/repositories/`: SQLAlchemy persistence access.
-- `app/services/`: registration plus currently unmounted OAuth scaffolding.
-- `app/models/` and `app/alembic/`: `auth` schema models and migrations.
-- `app/tests/`: Python `unittest` tests.
+- `backend/main.py`: FastAPI lifespan, request-ID middleware, CORS, and v1 router.
+- `backend/api/v1/api.py`: route registration and the source of truth for active endpoint groups.
+- `backend/api/v1/endpoints/`: authentication, user, and health handlers.
+- `backend/auth/dependencies.py`: cookie/custom-header authentication and revocation.
+- `backend/core/config.py` and `backend/core/security.py`: settings, JWTs, and password primitives.
+- `backend/repositories/`: SQLAlchemy persistence access.
+- `backend/services/`: registration plus currently unmounted OAuth scaffolding.
+- `backend/models/` and `backend/alembic/`: `auth` schema models and migrations.
+- `backend/tests/`: Python `unittest` tests.
 - `frontend/src/App.jsx`: navigation and route definitions.
 - `frontend/src/auth/AuthProvider.jsx`: browser session state and Axios response interception.
 - `frontend/src/services/`: browser API wrappers.
@@ -55,13 +55,13 @@ Use `docker compose down` only when stopping the project is intended. Never add 
 
 ## Configuration
 
-- Never read, print, commit, or copy values from `.env`, `app/.env`, or `frontend/.env` into tracked files or logs.
-- Placeholder configuration belongs in `.env.example` files. The current `app/.env.example` is missing required `COOKIE_KEY`, and no `frontend/.env.example` is tracked; account for those gaps when improving setup or configuration.
+- Never read, print, commit, or copy values from `.env`, `backend/.env`, or `frontend/.env` into tracked files or logs.
+- Keep `.env.example`, `backend/.env.example`, and `frontend/.env.example` synchronized with the settings each layer actually reads. Examples must contain placeholders only.
 - Root Compose interpolation uses `POSTGRES_MAIN_USER`, `POSTGRES_MAIN_PASSWORD`, and `POSTGRES_MAIN_DB`.
 - API settings require `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, and `COOKIE_KEY`; `ALGORITHM` and token lifetime have defaults.
 - Browser code reads `VITE_AUTH_SERVICE_BACKEND_URL`. Every `VITE_` value is public and must never contain a secret.
 - OAuth-related environment names exist but do not imply a working OAuth flow.
-- `CORS_ORIGINS_JSON` currently has no effect because `app/main.py` uses a hard-coded wildcard and the setting is commented out.
+- CORS is not environment-driven yet because `backend/main.py` uses a hard-coded wildcard and the corresponding setting is commented out.
 
 ## Current Authentication Contract
 
@@ -91,7 +91,7 @@ Preserve these routes unless an intentional migration is documented and tested. 
 ## Verification Expectations
 
 - Documentation-only changes: validate paths and commands against the repository, run `docker compose config --quiet`, and inspect the final diff.
-- API changes: run the focused test first, then the full `app/tests` suite.
+- API changes: run the focused test first, then the full `backend/tests` suite.
 - Frontend changes: run ESLint and the production build; add a test framework before claiming frontend automated coverage.
 - Runtime or cross-layer changes: build and start the Compose stack, inspect health/logs, and browser-verify the affected journey.
 - Readiness endpoints are currently static; a successful readiness response is not proof that PostgreSQL or Redis is healthy.

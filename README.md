@@ -15,7 +15,7 @@ For a detailed repository and runtime map, see [`APP_STRUCTURE_BLUEPRINT.md`](AP
 - **Authentication:** HS256 JWTs, `pwdlib` password hashing, and an HttpOnly browser cookie.
 - **Runtime:** Docker Compose publishes the frontend on `5175`, API on `8002`, and PostgreSQL on `5434`.
 
-The browser calls the API URL configured by `VITE_AUTH_SERVICE_BACKEND_URL` with credentials enabled. CORS is currently hard-coded to `*` in `app/main.py`; the `CORS_ORIGINS_JSON` placeholder is not wired into settings or middleware.
+The browser calls the API URL configured by `VITE_AUTH_SERVICE_BACKEND_URL` with credentials enabled. CORS is currently hard-coded to `*` in `backend/main.py`; no environment-backed CORS setting is wired into the middleware.
 
 ## Configure
 
@@ -23,16 +23,11 @@ Prerequisites: Docker Engine and Docker Compose v2.
 
 ```bash
 cp .env.example .env
-cp app/.env.example app/.env
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-Replace the database and signing-secret placeholders before using the service outside local development. The API also requires `COOKIE_KEY`, which is not currently present in the tracked `app/.env.example`. Add a non-secret cookie name such as `COOKIE_KEY=auth_session` to `app/.env`.
-
-Create `frontend/.env` with the browser-visible API origin:
-
-```dotenv
-VITE_AUTH_SERVICE_BACKEND_URL=http://localhost:8002
-```
+Replace the database password in both the root and backend environment files so PostgreSQL and the backend use the same credentials. Replace the signing-secret placeholder before using the service outside local development. The frontend template points to the locally published API at `http://localhost:8002`.
 
 The tracked examples contain OAuth timeout and rate-limit placeholders reserved for the unfinished authorization-code flow; no active route consumes them. Values prefixed with `VITE_` are public and must never contain secrets.
 
@@ -97,7 +92,7 @@ The frontend does not currently have an automated test script or a Compose test 
 
 ## Current Limitations
 
-- `services/authorization_codes.py` and `services/login_rate_limit.py` are scaffolding only. They are not mounted by `app/api/v1/api.py`, and the authorization-code module imports a missing `core.oauth` module.
+- `backend/services/authorization_codes.py` and `backend/services/login_rate_limit.py` are scaffolding only. They are not mounted by `backend/api/v1/api.py`, and the authorization-code module imports a missing `core.oauth` module.
 - OAuth client, expiry, and login-rate configuration is not used by an active flow.
 - The current frontend auth flow needs repair: its provider references undefined OAuth values, async form actions are not consistently awaited, and some `/user/*` redirects do not match the registered `/auth/*` routes.
 - Connected-app and profile-management screens contain placeholder data and disabled controls.

@@ -30,7 +30,7 @@ auth-service/
 ├── docker-compose.yaml
 ├── pyproject.toml
 ├── .env.example
-├── app/
+├── backend/
 │   ├── main.py
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -56,6 +56,7 @@ auth-service/
 │   ├── services/
 │   └── tests/
 └── frontend/
+    ├── .env.example
     ├── index.html
     ├── package.json
     ├── vite.config.js
@@ -109,7 +110,7 @@ PostgreSQL on `5434`. Redis is reachable only on the Compose network as
 | `APP_STRUCTURE_BLUEPRINT.md` | This architecture and ownership map. |
 | `docker-compose.yaml` | Defines services, ports, volumes, health checks, and startup ordering. |
 | `.env.example` | Placeholder values used by Compose interpolation. |
-| `pyproject.toml` | Minimal Python project metadata; dependencies remain in `app/requirements.txt`. |
+| `pyproject.toml` | Minimal Python project metadata; dependencies remain in `backend/requirements.txt`. |
 
 ## Compose Services and Startup
 
@@ -117,7 +118,7 @@ PostgreSQL on `5434`. Redis is reachable only on the Compose network as
 | --- | --- | --- | --- | --- |
 | `db-cache` | `redis:7.4-alpine` | None | `auth_redis_cache` | Disables snapshots and append-only persistence; health checked with `redis-cli ping`. |
 | `postgres` | `postgres:17-alpine` | `5434:5432` | `postgres_data` | Health checked with `pg_isready`. |
-| `api` | `app/Dockerfile` | `8002:8000` | Bind mounts `./app:/app` | Waits for PostgreSQL and Redis, runs Alembic, then starts reload-mode Uvicorn. |
+| `api` | `backend/Dockerfile` | `8002:8000` | Bind mounts `./backend:/app` | Waits for PostgreSQL and Redis, runs Alembic, then starts reload-mode Uvicorn. |
 | `frontend` | `frontend/Dockerfile` | `5175:5173` | Source bind mount plus `node_modules` volume | Starts the Vite development server after the API container starts. |
 
 ```text
@@ -132,25 +133,25 @@ health and readiness routes do not query PostgreSQL or Redis.
 
 ## Backend API
 
-`app/main.py` creates the FastAPI application, owns the Redis lifespan, installs
+`backend/main.py` creates the FastAPI application, owns the Redis lifespan, installs
 request-ID and CORS middleware, and mounts the v1 router at `/api/v1`.
 
 ### Backend directories
 
 | Path | Responsibility |
 | --- | --- |
-| `app/api/v1/endpoints/` | Active HTTP handlers for auth, users, and health. |
-| `app/auth/` | Resolves current users and revokes the current cookie token. |
-| `app/cache/` | Redis lifecycle, dependency injection, and JSON helpers. |
-| `app/core/` | Pydantic settings plus JWT/password primitives. |
-| `app/db/` | Async SQLAlchemy engine, sessions, dependency, and metadata. |
-| `app/middleware/` | Request-ID middleware; the other modules are empty placeholders. |
-| `app/models/` | SQLAlchemy models in the PostgreSQL `auth` schema. |
-| `app/repositories/` | User persistence and token-revocation persistence/cache operations. |
-| `app/schemas/` | Pydantic request, response, and internal user shapes. |
-| `app/services/` | Registration plus unmounted authorization-code/rate-limit scaffolding. |
-| `app/alembic/` | Async migration environment and schema history. |
-| `app/tests/` | Python `unittest` regression tests. |
+| `backend/api/v1/endpoints/` | Active HTTP handlers for auth, users, and health. |
+| `backend/auth/` | Resolves current users and revokes the current cookie token. |
+| `backend/cache/` | Redis lifecycle, dependency injection, and JSON helpers. |
+| `backend/core/` | Pydantic settings plus JWT/password primitives. |
+| `backend/db/` | Async SQLAlchemy engine, sessions, dependency, and metadata. |
+| `backend/middleware/` | Request-ID middleware; the other modules are empty placeholders. |
+| `backend/models/` | SQLAlchemy models in the PostgreSQL `auth` schema. |
+| `backend/repositories/` | User persistence and token-revocation persistence/cache operations. |
+| `backend/schemas/` | Pydantic request, response, and internal user shapes. |
+| `backend/services/` | Registration plus unmounted authorization-code/rate-limit scaffolding. |
+| `backend/alembic/` | Async migration environment and schema history. |
+| `backend/tests/` | Python `unittest` regression tests. |
 
 ### Active routes
 
@@ -172,7 +173,7 @@ Every route below is prefixed with `/api/v1`.
 | `POST` | `/users/deactivate` | `deactivate_user_route` | Cookie | Marks the current user inactive. |
 | `POST` | `/users/make-admin` | `make_admin_route` | Current user; inline admin check | Grants admin status to a target user. |
 
-No `/oauth` router is included by `app/api/v1/api.py`.
+No `/oauth` router is included by `backend/api/v1/api.py`.
 
 ## Authentication and Revocation Flows
 
@@ -320,33 +321,34 @@ through to `/about`.
 | File | Important settings |
 | --- | --- |
 | Root `.env` | PostgreSQL container credentials and Compose-level OAuth placeholders. |
-| `app/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, and OAuth placeholders. |
+| `backend/.env` | Database/Redis URLs, signing secret, algorithm, token lifetime, cookie name, and OAuth placeholders. |
 | `frontend/.env` | Browser-visible API base URL in `VITE_AUTH_SERVICE_BACKEND_URL`. |
 
 Environment files are ignored and must not be read, logged, or committed.
 Tracked examples contain placeholders only.
 
+The tracked root, backend, and frontend examples cover the variables currently
+read by Compose and application settings. The root and backend database password
+placeholders must remain synchronized when local files are created.
+
 Important current details:
 
-- `COOKIE_KEY` is required by `Settings` but absent from the tracked
-  `app/.env.example`.
-- Compose references `frontend/.env`, but no `frontend/.env.example` is tracked.
-- `CORS_ORIGINS_JSON` appears in examples, but its setting is commented out and
-  `app/main.py` uses `allow_origins=["*"]`.
+- CORS has no active environment setting; `backend/main.py` currently uses
+  `allow_origins=["*"]`.
 - OAuth client, timeout, and rate-limit settings have no active route consumers.
 
 ## OAuth/PKCE Scaffolding Status
 
-`app/services/authorization_codes.py` defines opaque code issuance and atomic
+`backend/services/authorization_codes.py` defines opaque code issuance and atomic
 single-use consumption through Redis `GETDEL`. Its grants bind a user, client
 ID, redirect URI, and PKCE challenge. The module calls
-`core.oauth.verify_pkce`, but `app/core/oauth.py` is not present.
+`core.oauth.verify_pkce`, but `backend/core/oauth.py` is not present.
 
-`app/services/login_rate_limit.py` defines Redis-backed IP and normalized-email
+`backend/services/login_rate_limit.py` defines Redis-backed IP and normalized-email
 buckets with hashed identifiers. Nothing currently instantiates or calls it.
 
-The settings and Compose file include authorization-code expiry, client JSON,
-and login-rate variables. No route parses registered clients, validates redirect
+The settings and Compose file include authorization-code expiry and login-rate
+variables. No route parses registered clients, validates redirect
 URIs, accepts `state`, issues codes, or exchanges a code for a token. These
 modules are foundations for future work, not an active OAuth contract.
 
@@ -360,7 +362,7 @@ CORS currently allows all origins, methods, and headers while also enabling
 credentials. Production work should replace this with an environment-derived
 explicit origin list and browser verification.
 
-`app/middleware/auth.py`, `cors.py`, and `logging.py` are empty placeholders.
+`backend/middleware/auth.py`, `cors.py`, and `logging.py` are empty placeholders.
 
 ## Tests and Development Commands
 
@@ -407,4 +409,4 @@ frontend test script or Compose test profile.
   persisted models and APIs before presenting them as account state.
 - Add endpoint/service tests, frontend component tests, and browser-level auth
   coverage.
-- Add and maintain complete `.env.example` files for every service.
+- Keep all three `.env.example` files synchronized as runtime settings evolve.
