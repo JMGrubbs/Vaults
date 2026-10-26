@@ -1,6 +1,7 @@
 services:
   api:
-    volumes: []
+    volumes: !reset []
+    command: ["sh", "-c", "alembic upgrade head && python -m uvicorn main:app --host 0.0.0.0 --port 8000"]
 
   frontend:
-    volumes: []
+    volumes: !reset []
