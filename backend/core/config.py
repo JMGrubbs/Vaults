@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     oauth_login_ip_limit: PositiveInt = 300
     cors_origins: str = (
         "http://localhost:5173,http://localhost:5175,"
-        "https://dvaults.johnmgrubbs.io"
+        "https://dvaults.johnmgrubbs.io,"
     )
     cookie_key: str
 
