@@ -12,10 +12,7 @@ class Settings(BaseSettings):
     oauth_login_rate_window_seconds: PositiveInt = 300
     oauth_login_email_limit: PositiveInt = 5
     oauth_login_ip_limit: PositiveInt = 300
-    cors_origins: str = (
-        "http://localhost:5173,http://localhost:5175,"
-        "https://dvaults.johnmgrubbs.io,"
-    )
+    cors_origins: str
     cookie_key: str
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
