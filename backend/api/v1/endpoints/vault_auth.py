@@ -63,6 +63,7 @@ async def login_route(
     session: AsyncSession = Depends(get_session),
     cache: CacheHelper = Depends(get_cache_helper),
 ) -> AuthorizedUser:
+    print("Tried to login user with email:", credentials.email, flush=True)
     logged_in_user: User | None = await login_user(
         session,
         credentials.email,
@@ -104,6 +105,7 @@ async def login_route(
 async def read_me_route(
     current_user: UserSchema = Depends(get_current_vault_user),
 ) -> AuthorizedUser:
+    print("Current user email:", current_user.email, flush=True)
     return AuthorizedUser(username=current_user.email)
 
 
